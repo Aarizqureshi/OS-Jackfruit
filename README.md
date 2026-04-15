@@ -58,6 +58,12 @@ Fix any issues reported before moving on.
 make
 ```
 
+For a CI-safe compile-only check (no kernel headers, no `sudo`, no rootfs needed):
+
+```bash
+make -C boilerplate ci
+```
+
 ---
 
 ### 📦 Step 3 — Prepare the Base Root Filesystem
@@ -119,24 +125,6 @@ sudo ./engine start beta ./rootfs-beta /bin/sh --soft-mib 64 --hard-mib 96
 **Default limits** (when not specified):
 - Soft limit: `40 MiB`
 - Hard limit: `64 MiB`
-
-### 7. GitHub Actions Smoke Check
-
-Your fork will inherit a minimal GitHub Actions workflow from this repository.
-
-That workflow only performs CI-safe checks:
-
-- `make -C boilerplate ci`
-- user-space binary compilation (`engine`, `memory_hog`, `cpu_hog`, `io_pulse`)
-- `./boilerplate/engine` with no arguments must print usage and exit with a non-zero status
-
-The CI-safe build command is:
-
-```bash
-make -C boilerplate ci
-```
-
-This smoke check does not test kernel-module loading, supervisor runtime behavior, or container execution.
 
 ---
 
@@ -240,11 +228,28 @@ engine stop <id>
 
 ---
 
-## 6. Demo with Screenshots
+## 6. CI Smoke Check
+
+This repository includes a GitHub Actions workflow that performs a minimal CI-safe build check on every push. It does **not** require `sudo`, kernel headers, module loading, rootfs setup, or a running supervisor.
+
+The CI target compiles:
+- `engine` (user-space runtime)
+- `cpu_hog`, `io_pulse`, `memory_hog` (workload binaries)
+
+And verifies that `./boilerplate/engine` with no arguments exits with a non-zero status (usage error), confirming the binary runs correctly.
+
+```bash
+make -C boilerplate ci
+```
+
+---
+
+## 7. Demo with Screenshots
 
 ### 1. Multi-Container Supervision
 
 ![Picture1](Screenshots/Picture1.png)
+
 *The supervisor process is running and managing multiple containers. The right panel shows `ps aux | grep engine` output — multiple container entries are visible under the single supervisor process, confirming concurrent multi-container management.*
 
 ---
@@ -252,6 +257,7 @@ engine stop <id>
 ### 2. Metadata Tracking
 
 ![Picture2](Screenshots/Picture2.png)
+
 *Output of `engine ps` showing both `alpha` and `beta` containers in the `running` state with their host PIDs, soft limits (40 MiB), and hard limits (64 MiB) tracked in supervisor metadata.*
 
 ---
@@ -259,6 +265,7 @@ engine stop <id>
 ### 3. Bounded-Buffer Logging
 
 ![Picture3](Screenshots/Picture3.png)
+
 *Output of `engine logs alpha` — container stdout/stderr captured through pipes into the supervisor's bounded-buffer logging pipeline and written to a persistent per-container log file. Each line of output was routed through the producer-consumer buffer.*
 
 ---
@@ -266,6 +273,7 @@ engine stop <id>
 ### 4. CLI and IPC
 
 ![Picture4](Screenshots/Picture4.png)
+
 *A `stop alpha` command is issued from the CLI client, which sends a request over the UNIX domain socket IPC control channel to the supervisor. The follow-up `engine ps` confirms the supervisor updated the `alpha` container state to `stopped` while `beta` continues running — demonstrating the control IPC path.*
 
 ---
@@ -273,13 +281,15 @@ engine stop <id>
 ### 5. Soft-Limit Warning
 
 ![Picture5](Screenshots/Picture5.png)
-*`dmesg` output showing the kernel module emitting `SOFT LIMIT` warning events for containers (`memtest3`, `memtest4`) that crossed their soft memory threshold. The warnings are logged once per container and visible in kernel ring buffer output.*
+
+*`dmesg` output showing the kernel module emitting `SOFT LIMIT` warning events for containers (`memtest3`, `memtest4`) that crossed their soft memory threshold. The warnings are logged once per container and visible in the kernel ring buffer.*
 
 ---
 
 ### 6. Hard-Limit Enforcement
 
 ![Picture6](Screenshots/Picture6.png)
+
 *`engine ps` output after memory-intensive workloads exceeded their hard limits. Containers `memtest3` and `memtest4` show state `hard_limit_killed` — confirming the kernel module sent `SIGKILL` and the supervisor correctly classified the termination reason in metadata.*
 
 ---
@@ -287,18 +297,20 @@ engine stop <id>
 ### 7. Scheduling Experiment
 
 ![Picture7](Screenshots/Picture7.png)
-*`top` output during concurrent scheduling experiment. The `fast` container (nice = −5) shows ~99.4% CPU usage while the `slow` container (nice = 10) shows ~99.1%  but receives lower scheduling priority. The I/O-bound process (`seed`, PID 2341) remains at ~4% CPU, demonstrating CFS responsiveness to I/O-heavy workloads.*
+
+*`top` output during a concurrent scheduling experiment. The `fast` container (nice = −5) shows ~99.4% CPU usage while the `slow` container (nice = 10) shows ~99.1% but receives lower scheduling priority. The I/O-bound process (`seed`, PID 2341) remains at ~4% CPU, demonstrating CFS responsiveness to I/O-heavy workloads.*
 
 ---
 
 ### 8. Clean Teardown
 
 ![Picture8](Screenshots/Picture8.png)
+
 *After stopping all containers, `engine ps` shows all containers in their final states (`stopped`, `hard_limit_killed`, `exited`). The `ps aux | grep defunct` command confirms zero zombie processes remain — all children were correctly reaped by the supervisor and all logging threads exited cleanly.*
 
 ---
 
-## 7. Engineering Analysis
+## 8. Engineering Analysis
 
 ### 1. Isolation Mechanisms
 
@@ -376,16 +388,17 @@ We conducted experiments using CPU-bound and I/O-bound workloads to observe Linu
 
 - CPU-bound containers dominate CPU usage when competing with each other.
 - I/O-bound containers remain responsive even alongside heavy CPU workloads because CFS prioritizes them quickly after wake-up.
-- Adjusting `nice` values shifts the virtual runtime vruntime accumulation rate, directly changing the proportion of CPU time each CPU-bound container receives.
+- Adjusting `nice` values shifts the virtual runtime (`vruntime`) accumulation rate, directly changing the proportion of CPU time each CPU-bound container receives.
 
 This connects to three key scheduling goals:
+
 - **Fairness**: CPU time is distributed proportionally among runnable tasks.
 - **Responsiveness**: I/O-bound tasks are scheduled quickly after waking up from blocking I/O.
 - **Throughput**: CPU-bound tasks utilize available CPU cycles effectively without leaving the CPU idle.
 
 ---
 
-## 8. Design Decisions and Tradeoffs
+## 9. Design Decisions and Tradeoffs
 
 ### 1. Namespace Isolation
 
@@ -437,11 +450,12 @@ This connects to three key scheduling goals:
 
 ---
 
-## 9. Scheduler Experiment Results
+## 10. Scheduler Experiment Results
 
-### Experiment 1: CPU-Bound vs I/O-Bound (Same Nice Value)
+### Experiment 1: CPU-Bound vs I/O-Bound
 
 **Setup:**
+
 ```bash
 sudo ./engine start cpu ./rootfs-alpha ./cpu_hog --nice 0
 sudo ./engine start io ./rootfs-beta ./io_pulse --nice 0
@@ -449,7 +463,7 @@ sudo ./engine start io ./rootfs-beta ./io_pulse --nice 0
 
 **Observation:**
 
-The `top` screenshot (Picture 7) shows:
+The `top` output (Screenshot 7) shows:
 
 | Process | Type | Nice | CPU Usage |
 |---------|------|------|-----------|
@@ -465,6 +479,7 @@ The `top` screenshot (Picture 7) shows:
 ### Experiment 2: CPU-Bound vs CPU-Bound with Different Nice Values
 
 **Setup:**
+
 ```bash
 sudo ./engine start fast ./rootfs-alpha ./cpu_hog --nice -5
 sudo ./engine start slow ./rootfs-beta ./cpu_hog --nice 10
@@ -472,7 +487,7 @@ sudo ./engine start slow ./rootfs-beta ./cpu_hog --nice 10
 
 **Observation:**
 
-CFS assigns lower `vruntime` accumulation to the higher-priority container (`fast`, nice = −5), so it is scheduled more frequently. The lower-priority container (`slow`, nice = 10) receives less CPU time proportionally. The difference in nice values (15 steps) results in measurable throughput differences between the two identical workloads.
+CFS assigns lower `vruntime` accumulation to the higher-priority container (`fast`, nice = −5), so it is scheduled more frequently. The lower-priority container (`slow`, nice = 10) receives less CPU time proportionally. The 15-step difference in nice values results in measurable throughput differences between the two identical workloads.
 
 ---
 
@@ -487,7 +502,7 @@ These results demonstrate:
 
 ---
 
-## 10. Cleanup and Teardown Verification
+## 11. Cleanup and Teardown Verification
 
 The final demo (Screenshot 8) explicitly verifies:
 
@@ -499,6 +514,7 @@ The final demo (Screenshot 8) explicitly verifies:
 - ✅ Kernel tracking entries are freed on `rmmod monitor`
 
 Useful verification commands:
+
 ```bash
 ps aux | grep engine
 ps -ef | grep defunct
@@ -507,7 +523,7 @@ dmesg | tail -n 50
 
 ---
 
-## 11. Repository Contents
+## 12. Repository Contents
 
 | File | Purpose |
 |------|---------|
